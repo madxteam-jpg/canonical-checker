@@ -3,4 +3,4 @@ requests
 beautifulsoup4
 aiohttp
 pandas
-html2image
+matplotlib
