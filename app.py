@@ -38,11 +38,20 @@ def normalize_url(url: str) -> str:
 
 
 def get_chromium_path():
-    """Detect binary path for Chromium/Chrome on Streamlit App Server environments."""
-    for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"]:
-        if shutil.which(path):
+    """Detect binary path for Chromium/Chrome on Linux servers."""
+    possible_paths = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+    ]
+    for path in possible_paths:
+        if os.path.exists(path) or shutil.which(path):
             return path
-    return None
+    
+    # Fallback search using system 'which'
+    found_path = shutil.which("chromium") or shutil.which("chromium-browser")
+    return found_path
 
 
 async def check_single_url(session: aiohttp.ClientSession, url: str, timeout: int) -> dict:
@@ -347,7 +356,7 @@ if urls_to_check:
             mime="text/csv"
         )
 
-        # 2. Screenshot Proof Export with Exception Handling
+        # 2. Screenshot Proof Export with Detailed Error Logging
         try:
             with st.spinner("Generating QA Screenshot Proof..."):
                 screenshot_bytes = capture_dashboard_screenshot(df)
@@ -359,4 +368,4 @@ if urls_to_check:
                 mime="image/png"
             )
         except Exception as e:
-            col_img.error("Screenshot generation failed. Ensure `packages.txt` containing `chromium` is added to your repo.")
+            col_img.error(f"Screenshot generation failed: {str(e)}")
