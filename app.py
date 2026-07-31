@@ -1,9 +1,11 @@
 import asyncio
+import io
 import re
 import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
+import matplotlib.pyplot as plt
 import pandas as pd
 from bs4 import BeautifulSoup
 import streamlit as st
@@ -117,6 +119,30 @@ async def run_bulk_check(urls: list, concurrency: int, timeout: int, progress_ba
     return results
 
 
+def generate_summary_chart(df: pd.DataFrame) -> io.BytesIO:
+    """Generate a pie chart image of Canonical Status breakdown."""
+    status_counts = df["canonical_status"].value_counts()
+    
+    fig, ax = plt.subplots(figsize=(6, 4))
+    colors = ['#2ca02c', '#ff7f0e', '#d62728', '#1f77b4', '#9467bd']
+    
+    ax.pie(
+        status_counts, 
+        labels=status_counts.index, 
+        autopct='%1.1f%%', 
+        startangle=140,
+        colors=colors[:len(status_counts)]
+    )
+    ax.set_title("Canonical Status Distribution", fontsize=12, fontweight='bold')
+    plt.tight_layout()
+
+    img_buffer = io.BytesIO()
+    plt.savefig(img_buffer, format='png', dpi=300)
+    plt.close(fig)
+    img_buffer.seek(0)
+    return img_buffer
+
+
 # --- STREAMLIT UI ---
 st.title("🔍 Bulk Canonical & Indexability Checker")
 st.markdown("Audit hundreds of URLs simultaneously to detect broken canonicals, `noindex` directives, and redirects.")
@@ -140,7 +166,6 @@ with tab_upload:
     uploaded_file = st.file_uploader("Upload CSV, TXT, or XML Sitemap", type=["csv", "txt", "xml"])
     if uploaded_file:
         if uploaded_file.name.endswith(".xml"):
-            # Simple XML Sitemap Parsing
             tree = ET.parse(uploaded_file)
             root = tree.getroot()
             namespaces = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
@@ -177,25 +202,23 @@ if urls_to_check:
         st.dataframe(df, use_container_width=True)
 
         # --- EXPORT OPTIONS ---
-        col_csv, col_excel = st.columns(2)
+        st.subheader("Download Audit Exports")
+        col_csv, col_img = st.columns(2)
         
-        # CSV Export
+        # 1. Retained CSV Export
         csv_data = df.to_csv(index=False).encode('utf-8')
         col_csv.download_button(
-            label="📥 Download Results (CSV)",
+            label="📥 Download Data (CSV)",
             data=csv_data,
             file_name="canonical_audit_results.csv",
             mime="text/csv"
         )
 
-        # Excel Export using openpyxl
-        import io
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name="SEO Audit")
-        col_excel.download_button(
-            label="📊 Download Results (Excel)",
-            data=buffer.getvalue(),
-            file_name="canonical_audit_results.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # 2. Replaced Excel with Image (PNG) Export
+        chart_image_buffer = generate_summary_chart(df)
+        col_img.download_button(
+            label="🖼️ Download Summary Chart (PNG Image)",
+            data=chart_image_buffer,
+            file_name="canonical_audit_summary.png",
+            mime="image/png"
         )
