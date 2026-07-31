@@ -1,17 +1,14 @@
 import asyncio
 import io
-import os
 import re
-import shutil
-import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 
 import aiohttp
+import matplotlib.pyplot as plt
 import pandas as pd
 from bs4 import BeautifulSoup
-from html2image import Html2Image
 import streamlit as st
 
 # Set Streamlit Page Config
@@ -35,23 +32,6 @@ def normalize_url(url: str) -> str:
     if parsed.query:
         scheme_netloc_path += f"?{parsed.query}"
     return scheme_netloc_path.lower()
-
-
-def get_chromium_path():
-    """Detect binary path for Chromium/Chrome on Linux servers."""
-    possible_paths = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ]
-    for path in possible_paths:
-        if os.path.exists(path) or shutil.which(path):
-            return path
-    
-    # Fallback search using system 'which'
-    found_path = shutil.which("chromium") or shutil.which("chromium-browser")
-    return found_path
 
 
 async def check_single_url(session: aiohttp.ClientSession, url: str, timeout: int) -> dict:
@@ -139,150 +119,79 @@ async def run_bulk_check(urls: list, concurrency: int, timeout: int, progress_ba
     return results
 
 
-def capture_dashboard_screenshot(df: pd.DataFrame) -> bytes:
-    """Generates a styled HTML summary of the audit and captures it as a PNG screenshot."""
+def generate_results_image_proof(df: pd.DataFrame) -> io.BytesIO:
+    """Renders a visual proof image containing audit metrics and a table of top results."""
     total_scanned = len(df)
     indexable_count = int(df["is_indexable"].sum())
     self_ref_count = int((df["canonical_status"] == "Self-Referential").sum())
     conflicts_count = int((df["canonical_status"] == "Canonicalized Elsewhere").sum())
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Render HTML table rows (up to 25 preview rows for proof screenshot)
-    table_rows = ""
-    for _, row in df.head(25).iterrows():
-        status_color = "#28a745" if row["is_indexable"] else "#dc3545"
-        table_rows += f"""
-        <tr>
-            <td style="max-width: 300px; word-break: break-all;">{row['requested_url']}</td>
-            <td>{row['status_code']}</td>
-            <td>{row['canonical_status']}</td>
-            <td style="max-width: 300px; word-break: break-all;">{row['canonical_found'] or '-'}</td>
-            <td style="color: {status_color}; font-weight: bold;">{row['is_indexable']}</td>
-        </tr>
-        """
+    # Limit to top 20 rows for a clean quality report image
+    preview_df = df[["requested_url", "status_code", "canonical_status", "is_indexable"]].head(20).copy()
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                background-color: #0e1117;
-                color: #ffffff;
-                padding: 30px;
-                width: 1200px;
-            }}
-            .header {{
-                border-bottom: 2px solid #333;
-                padding-bottom: 15px;
-                margin-bottom: 25px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }}
-            .title {{ font-size: 24px; font-weight: bold; color: #4094f7; }}
-            .badge {{ background: #1f2937; padding: 6px 12px; border-radius: 6px; font-size: 12px; color: #9ca3af; }}
-            .metrics-grid {{
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                gap: 15px;
-                margin-bottom: 30px;
-            }}
-            .metric-card {{
-                background: #161b22;
-                border: 1px solid #30363d;
-                border-radius: 8px;
-                padding: 20px;
-                text-align: center;
-            }}
-            .metric-value {{ font-size: 32px; font-weight: bold; margin-top: 5px; color: #f0f6fc; }}
-            .metric-label {{ font-size: 13px; color: #8b949e; text-transform: uppercase; }}
-            table {{
-                width: 100%;
-                border-collapse: collapse;
-                background: #161b22;
-                border-radius: 8px;
-                overflow: hidden;
-                border: 1px solid #30363d;
-                font-size: 13px;
-            }}
-            th {{ background: #21262d; color: #c9d1d9; text-align: left; padding: 12px; border-bottom: 1px solid #30363d; }}
-            td {{ padding: 10px 12px; border-bottom: 1px solid #21262d; color: #8b949e; }}
-            tr:nth-child(even) {{ background-color: #0d1117; }}
-            .footer {{
-                margin-top: 20px;
-                font-size: 11px;
-                color: #6e7681;
-                text-align: right;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="header">
-            <div class="title">🔍 Quality Check Audit Proof</div>
-            <div class="badge">Timestamp: {timestamp}</div>
-        </div>
+    # Truncate overly long URLs for aesthetics
+    preview_df["requested_url"] = preview_df["requested_url"].apply(lambda x: x[:45] + "..." if len(x) > 45 else x)
 
-        <div class="metrics-grid">
-            <div class="metric-card">
-                <div class="metric-label">Total Scanned</div>
-                <div class="metric-value">{total_scanned}</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Indexable URLs</div>
-                <div class="metric-value" style="color: #3fb950;">{indexable_count}</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Self-Referential</div>
-                <div class="metric-value" style="color: #58a6ff;">{self_ref_count}</div>
-            </div>
-            <div class="metric-card">
-                <div class="metric-label">Canonical Conflicts</div>
-                <div class="metric-value" style="color: #f85149;">{conflicts_count}</div>
-            </div>
-        </div>
+    # Figure Setup
+    fig = plt.figure(figsize=(12, 10), facecolor="#0e1117")
+    gs = fig.add_gridspec(2, 4, height_ratios=[1, 4])
 
-        <h3>Audit Results Summary (First 25 Rows)</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Requested URL</th>
-                    <th>Status</th>
-                    <th>Canonical Status</th>
-                    <th>Canonical Found</th>
-                    <th>Indexable</th>
-                </tr>
-            </thead>
-            <tbody>
-                {table_rows}
-            </tbody>
-        </table>
+    # Header & Metric Cards
+    metrics_data = [
+        ("TOTAL SCANNED", f"{total_scanned}", "#4094f7"),
+        ("INDEXABLE", f"{indexable_count}", "#28a745"),
+        ("SELF-REFERENTIAL", f"{self_ref_count}", "#17a2b8"),
+        ("CONFLICTS", f"{conflicts_count}", "#dc3545"),
+    ]
 
-        <div class="footer">Verified by Bulk Canonical & Indexability Audit Engine</div>
-    </body>
-    </html>
-    """
+    for idx, (label, val, color) in enumerate(metrics_data):
+        ax = fig.add_subplot(gs[0, idx])
+        ax.set_facecolor("#161b22")
+        ax.text(0.5, 0.65, val, fontsize=22, fontweight='bold', color=color, ha='center', va='center')
+        ax.text(0.5, 0.25, label, fontsize=9, fontweight='bold', color="#8b949e", ha='center', va='center')
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color("#30363d")
 
-    browser_path = get_chromium_path()
+    # Table View
+    ax_table = fig.add_subplot(gs[1, :])
+    ax_table.axis('off')
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        hti_kwargs = {"output_path": tmpdir}
-        if browser_path:
-            hti_kwargs["browser_path"] = browser_path
+    table = ax_table.table(
+        cellText=preview_df.values,
+        colLabels=["Requested URL", "Status", "Canonical Status", "Indexable"],
+        cellLoc='left',
+        loc='center'
+    )
 
-        hti = Html2Image(**hti_kwargs)
-        # Linux container flags required for serverless/Streamlit environments
-        hti.custom_flags = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+    table.auto_set_font_size(False)
+    table.set_細_size = 9
+    table.scale(1, 1.8)
 
-        output_filename = "audit_proof.png"
-        hti.screenshot(html_str=html_content, save_as=output_filename, size=(1240, 1000))
+    # Style Table Cells
+    for (row, col), cell in table.get_celld().items():
+        cell.set_edgecolor("#30363d")
+        if row == 0:
+            cell.set_text_props(weight='bold', color='#f0f6fc', size=10)
+            cell.set_facecolor('#21262d')
+        else:
+            cell.set_text_props(color='#c9d1d9', size=9)
+            cell.set_facecolor('#161b22' if row % 2 == 0 else '#0d1117')
 
-        file_path = os.path.join(tmpdir, output_filename)
-        with open(file_path, "rb") as f:
-            image_bytes = f.read()
+    # Watermark Header/Footer
+    plt.suptitle("🔍 Quality Check Audit Proof", fontsize=16, fontweight='bold', color="#ffffff", y=0.96)
+    plt.figtext(0.95, 0.02, f"Verified: {timestamp}", fontsize=8, color="#8b949e", ha="right")
 
-    return image_bytes
+    plt.tight_layout(rect=[0, 0.03, 1, 0.93])
+
+    # Save to BytesIO Memory Buffer
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
 
 
 # --- STREAMLIT UI ---
@@ -356,16 +265,13 @@ if urls_to_check:
             mime="text/csv"
         )
 
-        # 2. Screenshot Proof Export with Detailed Error Logging
-        try:
-            with st.spinner("Generating QA Screenshot Proof..."):
-                screenshot_bytes = capture_dashboard_screenshot(df)
+        # 2. Image Proof Export (Matplotlib Native Rendering)
+        with st.spinner("Rendering Results Preview Image..."):
+            image_buf = generate_results_image_proof(df)
 
-            col_img.download_button(
-                label="📸 Download Proof Screenshot (PNG)",
-                data=screenshot_bytes,
-                file_name="canonical_audit_proof.png",
-                mime="image/png"
-            )
-        except Exception as e:
-            col_img.error(f"Screenshot generation failed: {str(e)}")
+        col_img.download_button(
+            label="📸 Download Proof Image (PNG)",
+            data=image_buf,
+            file_name="canonical_audit_proof.png",
+            mime="image/png"
+        )
