@@ -1,6 +1,13 @@
+# Web Application Framework
 streamlit>=1.30.0
+
+# HTTP Requests & Scraping
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 aiohttp>=3.9.0
+
+# Data Processing
 pandas>=2.0.0
-matplotlib>=3.7.0
+
+# QA Screenshot Generation
+html2image>=2.0.0
